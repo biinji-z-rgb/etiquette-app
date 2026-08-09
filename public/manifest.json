@@ -1,0 +1,9 @@
+{
+  "name": "Scan Étiquettes",
+  "short_name": "Scan Étiq.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12160f",
+  "theme_color": "#1b2320",
+  "icons": []
+}

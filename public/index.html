@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Scan Étiquettes</title>
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#1b2320" />
+<style>
+  :root{
+    --bg: #12160f;
+    --panel: #1b2320;
+    --panel-2: #222b25;
+    --accent: #e8a13c;
+    --accent-2: #6b8f57;
+    --text: #f1efe6;
+    --text-dim: #a8b0a3;
+    --danger: #d1583f;
+    --ok: #6b8f57;
+    --mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family:var(--sans); }
+  body{
+    min-height:100dvh;
+    padding: 20px 16px calc(24px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:16px;
+  }
+  header{ display:flex; align-items:center; gap:10px; padding:4px 2px 8px; border-bottom:1px solid #2a332c; }
+  .tag{
+    width:34px;height:34px;border-radius:8px;
+    background:linear-gradient(160deg, var(--accent), #b97a1f);
+    display:flex;align-items:center;justify-content:center;font-size:18px;
+  }
+  h1{ font-size:17px; margin:0; letter-spacing:.2px; font-weight:600; }
+  .sub{ font-size:12px; color:var(--text-dim); margin-top:1px; }
+
+  .card{
+    background:var(--panel);
+    border:1px solid #2a332c;
+    border-radius:14px;
+    padding:16px;
+  }
+
+  /* --- Caméra live avec cadrage --- */
+  #cameraCard{ padding:12px; }
+  #cameraWrap{
+    position:relative;
+    width:100%;
+    aspect-ratio: 4 / 5;
+    background:#000;
+    border-radius:12px;
+    overflow:hidden;
+  }
+  #camera{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover;
+    display:block;
+  }
+  #guideOverlay{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    pointer-events:none;
+  }
+  #guideHint{
+    position:absolute;
+    left:0; right:0; top:10px;
+    text-align:center;
+    font-size:12.5px;
+    color:#fff;
+    text-shadow: 0 1px 4px rgba(0,0,0,.7);
+    padding:0 20px;
+    pointer-events:none;
+  }
+  #captureZone{
+    display:flex; flex-direction:column; align-items:center; gap:14px;
+    padding:34px 16px;
+    border:1.5px dashed #3a4436;
+    border-radius:14px;
+    text-align:center;
+  }
+  #captureZone .icon{ font-size:34px; }
+  #captureZone p{ margin:0; color:var(--text-dim); font-size:13px; line-height:1.5; }
+
+  button, .btn{
+    appearance:none; border:none; cursor:pointer;
+    font-family:var(--sans); font-weight:600; font-size:15px;
+    padding:14px 18px; border-radius:11px;
+    width:100%;
+    transition: transform .08s ease, opacity .15s ease;
+  }
+  button:active{ transform: scale(0.98); }
+  .btn-primary{ background:var(--accent); color:#1b1508; }
+  .btn-secondary{ background:var(--panel-2); color:var(--text); border:1px solid #37423a; }
+  .btn-ok{ background:var(--ok); color:#0e1a0a; }
+  .btn-ghost{ background:transparent; color:var(--text-dim); border:1px solid #303a32; font-weight:500; font-size:13px; padding:10px; }
+  button:disabled{ opacity:.45; pointer-events:none; }
+
+  #fileInput{ display:none; }
+  .capture-actions{ margin-top:12px; display:flex; flex-direction:column; gap:8px; }
+
+  .field{ margin-bottom:12px; }
+  .field label{
+    display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+    color:var(--text-dim); margin-bottom:6px; font-weight:600;
+  }
+  .field input, .field textarea{
+    width:100%; background:#0f140f; border:1px solid #33402f;
+    color:var(--text); border-radius:9px; padding:11px 12px;
+    font-family:var(--mono); font-size:14px;
+  }
+  .field textarea{ min-height:70px; resize:vertical; font-family:var(--sans); }
+  .field input:focus, .field textarea:focus{ outline:2px solid var(--accent); outline-offset:0; }
+
+  #preview{
+    width:100%; max-height:220px; object-fit:cover; border-radius:10px; margin-bottom:14px;
+    border:1px solid #2a332c;
+  }
+
+  .status{ font-size:13px; text-align:center; padding:10px; border-radius:9px; margin-top:4px; }
+  .status.loading{ color:var(--accent); }
+  .status.ok{ background:rgba(107,143,87,.15); color:var(--ok); }
+  .status.err{ background:rgba(209,88,63,.15); color:var(--danger); }
+
+  .spinner{
+    width:16px;height:16px;border-radius:50%;
+    border:2px solid rgba(232,161,60,.25); border-top-color:var(--accent);
+    display:inline-block; vertical-align:-3px; margin-right:8px;
+    animation:spin .7s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  footer{ text-align:center; }
+  .hidden{ display:none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="tag">🏷️</div>
+  <div>
+    <h1>Scan Étiquettes</h1>
+    <div class="sub">Enregistrement partagé — commun à tous les téléphones</div>
+  </div>
+</header>
+
+<!-- ÉTAPE 1 : capture -->
+<section id="step-capture" class="card">
+
+  <!-- Vue caméra live avec cadre de visée -->
+  <div id="cameraView">
+    <div id="cameraWrap">
+      <video id="camera" autoplay playsinline muted></video>
+      <svg id="guideOverlay" viewBox="0 0 400 500" preserveAspectRatio="none"></svg>
+      <div id="guideHint">Aligne l'étiquette dans le cadre, bien à plat et éclairée</div>
+    </div>
+    <div class="capture-actions">
+      <button class="btn-primary" id="btnCapture" disabled>📸 Prendre la photo</button>
+      <button class="btn-ghost" id="btnUseFile">Utiliser la pellicule / une autre méthode</button>
+    </div>
+  </div>
+
+  <!-- Solution de repli si la caméra live n'est pas disponible -->
+  <div id="captureZone" class="hidden">
+    <div class="icon">📷</div>
+    <p>Prends une photo nette de l'étiquette, bien cadrée et à plat.</p>
+    <button class="btn-primary" id="btnOpenCamera">Prendre une photo</button>
+  </div>
+  <input type="file" id="fileInput" accept="image/*" capture="environment" />
+</section>
+
+<!-- ÉTAPE 2 : validation -->
+<section id="step-validate" class="card hidden">
+  <img id="preview" alt="Photo de l'étiquette" />
+
+  <div id="scanStatus" class="status loading hidden">
+    <span class="spinner"></span> Lecture de l'étiquette en cours…
+  </div>
+
+  <div id="formFields" class="hidden">
+    <div class="field">
+      <label for="fNumTranche">Numéro de tranche</label>
+      <input type="text" id="fNumTranche" placeholder="" />
+    </div>
+    <div class="field">
+      <label for="fNumId">Numéro d'identification</label>
+      <input type="text" id="fNumId" placeholder="" />
+    </div>
+    <div class="field">
+      <label for="fTexte">Texte lu sur l'étiquette</label>
+      <textarea id="fTexte" placeholder="Corrige si besoin"></textarea>
+    </div>
+
+    <button class="btn-ok" id="btnValidate">✓ Valider et enregistrer</button>
+    <div style="height:8px"></div>
+    <button class="btn-secondary" id="btnRetake">Reprendre la photo</button>
+  </div>
+
+  <div id="saveStatus" class="status hidden"></div>
+</section>
+
+<footer>
+  <button class="btn-ghost" id="btnExport">⬇ Télécharger le fichier Excel complet</button>
+</footer>
+
+<canvas id="captureCanvas" class="hidden"></canvas>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+let currentPhotoBlob = null;
+let mediaStream = null;
+
+const stepCapture = $("step-capture");
+const stepValidate = $("step-validate");
+const cameraView = $("cameraView");
+const captureZone = $("captureZone");
+const cameraWrap = $("cameraWrap");
+const cameraEl = $("camera");
+const guideOverlay = $("guideOverlay");
+const btnCapture = $("btnCapture");
+const btnUseFile = $("btnUseFile");
+const btnOpenCamera = $("btnOpenCamera");
+const fileInput = $("fileInput");
+const preview = $("preview");
+const scanStatus = $("scanStatus");
+const formFields = $("formFields");
+const saveStatus = $("saveStatus");
+const captureCanvas = $("captureCanvas");
+
+// --- Dessine le cadre de visée (coins de scanner + rectangle guide) ---
+function drawGuideOverlay() {
+  // Rectangle centré occupant ~82% de large, adapté au format d'étiquette
+  // (plus large que haut), avec des coins style "scanner" pour un repère clair.
+  const W = 400, H = 500;
+  const rectW = W * 0.82;
+  const rectH = rectW * 0.5; // ratio proche des étiquettes photographiées
+  const x = (W - rectW) / 2;
+  const y = (H - rectH) / 2;
+  const c = 22; // longueur des coins
+
+  guideOverlay.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  guideOverlay.innerHTML = `
+    <defs>
+      <mask id="mask">
+        <rect x="0" y="0" width="${W}" height="${H}" fill="white"/>
+        <rect x="${x}" y="${y}" width="${rectW}" height="${rectH}" rx="10" fill="black"/>
+      </mask>
+    </defs>
+    <rect x="0" y="0" width="${W}" height="${H}" fill="rgba(0,0,0,0.45)" mask="url(#mask)"/>
+    <rect x="${x}" y="${y}" width="${rectW}" height="${rectH}" rx="10"
+          fill="none" stroke="rgba(255,255,255,0.55)" stroke-width="1.5" stroke-dasharray="6 6"/>
+    <g stroke="#e8a13c" stroke-width="4" stroke-linecap="round" fill="none">
+      <path d="M ${x} ${y+c} L ${x} ${y} L ${x+c} ${y}"/>
+      <path d="M ${x+rectW-c} ${y} L ${x+rectW} ${y} L ${x+rectW} ${y+c}"/>
+      <path d="M ${x+rectW} ${y+rectH-c} L ${x+rectW} ${y+rectH} L ${x+rectW-c} ${y+rectH}"/>
+      <path d="M ${x+c} ${y+rectH} L ${x} ${y+rectH} L ${x} ${y+rectH-c}"/>
+    </g>
+  `;
+
+  // renvoie la zone du cadre en proportions (0-1) pour pouvoir recadrer la vraie photo
+  return { xRatio: x / W, yRatio: y / H, wRatio: rectW / W, hRatio: rectH / H };
+}
+let guideRatio = drawGuideOverlay();
+window.addEventListener("resize", () => { guideRatio = drawGuideOverlay(); });
+
+// --- Démarre la caméra live ---
+async function startCamera() {
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    });
+    cameraEl.srcObject = mediaStream;
+    await cameraEl.play();
+    btnCapture.disabled = false;
+    cameraView.classList.remove("hidden");
+    captureZone.classList.add("hidden");
+  } catch (err) {
+    console.warn("Caméra live indisponible, repli sur la sélection classique :", err);
+    cameraView.classList.add("hidden");
+    captureZone.classList.remove("hidden");
+  }
+}
+
+function stopCamera() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+}
+
+// --- Capture une image depuis le flux vidéo, recadrée sur le cadre guide ---
+function captureFromVideo() {
+  const vw = cameraEl.videoWidth;
+  const vh = cameraEl.videoHeight;
+  if (!vw || !vh) return null;
+
+  // La vidéo est affichée en object-fit:cover dans un cadre 4/5 : on calcule
+  // la zone réellement visible à l'écran pour que le recadrage corresponde
+  // pile à ce que l'utilisateur voit dans le cadre de visée.
+  const displayRatio = cameraWrap.clientWidth / cameraWrap.clientHeight;
+  const videoRatio = vw / vh;
+
+  let visW, visH, offX, offY;
+  if (videoRatio > displayRatio) {
+    visH = vh;
+    visW = vh * displayRatio;
+    offX = (vw - visW) / 2;
+    offY = 0;
+  } else {
+    visW = vw;
+    visH = vw / displayRatio;
+    offX = 0;
+    offY = (vh - visH) / 2;
+  }
+
+  const cropX = offX + guideRatio.xRatio * visW;
+  const cropY = offY + guideRatio.yRatio * visH;
+  const cropW = guideRatio.wRatio * visW;
+  const cropH = guideRatio.hRatio * visH;
+
+  captureCanvas.width = cropW;
+  captureCanvas.height = cropH;
+  const ctx = captureCanvas.getContext("2d");
+  ctx.drawImage(cameraEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  return new Promise((resolve) => {
+    captureCanvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.92);
+  });
+}
+
+btnCapture.addEventListener("click", async () => {
+  btnCapture.disabled = true;
+  const blob = await captureFromVideo();
+  btnCapture.disabled = false;
+  if (!blob) return;
+  handleNewPhoto(blob);
+});
+
+btnUseFile.addEventListener("click", () => fileInput.click());
+btnOpenCamera.addEventListener("click", () => fileInput.click());
+
+fileInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  handleNewPhoto(file);
+});
+
+// --- Flux commun une fois une photo obtenue (caméra live OU fichier) ---
+async function handleNewPhoto(blob) {
+  currentPhotoBlob = blob;
+  stopCamera();
+
+  preview.src = URL.createObjectURL(blob);
+  stepCapture.classList.add("hidden");
+  stepValidate.classList.remove("hidden");
+  formFields.classList.add("hidden");
+  saveStatus.classList.add("hidden");
+  scanStatus.classList.remove("hidden");
+
+  const fd = new FormData();
+  fd.append("photo", blob, "etiquette.jpg");
+
+  try {
+    const res = await fetch("/api/scan", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erreur OCR");
+
+    $("fNumTranche").value = data.draft.numeroTranche || "";
+    $("fNumId").value = data.draft.numeroIdentification || "";
+    $("fTexte").value = data.draft.texte || "";
+
+    scanStatus.classList.add("hidden");
+    formFields.classList.remove("hidden");
+  } catch (err) {
+    scanStatus.classList.add("hidden");
+    saveStatus.classList.remove("hidden");
+    saveStatus.className = "status err";
+    saveStatus.textContent = "Erreur de lecture : " + err.message + " — tu peux quand même remplir les champs à la main.";
+    formFields.classList.remove("hidden");
+  }
+}
+
+$("btnRetake").addEventListener("click", () => {
+  fileInput.value = "";
+  stepValidate.classList.add("hidden");
+  stepCapture.classList.remove("hidden");
+  startCamera();
+});
+
+$("btnValidate").addEventListener("click", async () => {
+  const btn = $("btnValidate");
+  btn.disabled = true;
+  btn.textContent = "Enregistrement…";
+
+  const fd = new FormData();
+  fd.append("photo", currentPhotoBlob, "etiquette.jpg");
+  fd.append("numeroTranche", $("fNumTranche").value);
+  fd.append("numeroIdentification", $("fNumId").value);
+  fd.append("texte", $("fTexte").value);
+
+  try {
+    const res = await fetch("/api/validate", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erreur d'enregistrement");
+
+    saveStatus.classList.remove("hidden");
+    saveStatus.className = "status ok";
+    saveStatus.textContent = "✓ Enregistré le " + data.dateHeure;
+
+    setTimeout(() => {
+      fileInput.value = "";
+      stepValidate.classList.add("hidden");
+      stepCapture.classList.remove("hidden");
+      btn.disabled = false;
+      btn.textContent = "✓ Valider et enregistrer";
+      startCamera();
+    }, 1400);
+  } catch (err) {
+    saveStatus.classList.remove("hidden");
+    saveStatus.className = "status err";
+    saveStatus.textContent = "Erreur : " + err.message;
+    btn.disabled = false;
+    btn.textContent = "✓ Valider et enregistrer";
+  }
+});
+
+$("btnExport").addEventListener("click", () => {
+  window.location.href = "/api/export-excel";
+});
+
+// Démarre la caméra dès l'ouverture de la page
+startCamera();
+</script>
+</body>
+</html>
