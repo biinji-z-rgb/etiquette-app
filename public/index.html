@@ -367,7 +367,7 @@ async function handleNewPhoto(blob) {
   try {
     const res = await fetch("/api/scan", { method: "POST", body: fd });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Erreur OCR");
+    if (!res.ok) throw new Error((data.error || "Erreur OCR") + (data.detail ? " — " + data.detail : ""));
 
     $("fNumTranche").value = data.draft.numeroTranche || "";
     $("fNumId").value = data.draft.numeroIdentification || "";
@@ -405,7 +405,7 @@ $("btnValidate").addEventListener("click", async () => {
   try {
     const res = await fetch("/api/validate", { method: "POST", body: fd });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Erreur d'enregistrement");
+    if (!res.ok) throw new Error((data.error || "Erreur d'enregistrement") + (data.detail ? " — " + data.detail : ""));
 
     saveStatus.classList.remove("hidden");
     saveStatus.className = "status ok";
