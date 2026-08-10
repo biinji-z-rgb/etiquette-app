@@ -127,6 +127,17 @@ app.get("/api/export-excel", async (req, res) => {
 });
 
 // Petite route de contrôle pour vérifier que le serveur + Google Sheet répondent
+// Diagnostic : confirme quelles variables d'environnement sont bien vues par // le serveur, SANS jamais afficher leur contenu (juste présent/absent).
+app.get("/api/env-check", (req, res) => {  const check = (name) => ({
+   presente: Boolean(process.env[name] && process.env[name].trim().length > 0),
+   longueur: process.env[name] ? process.env[name].trim().length : 0,  });  res.json({
+   GOOGLE_SERVICE_ACCOUNT_KEY: check("GOOGLE_SERVICE_ACCOUNT_KEY"),
+   GOOGLE_SHEET_ID: check("GOOGLE_SHEET_ID"),
+   CLOUDINARY_CLOUD_NAME: check("CLOUDINARY_CLOUD_NAME"),
+   CLOUDINARY_UPLOAD_PRESET: check("CLOUDINARY_UPLOAD_PRESET"),
+ });
+})
+
 app.get("/api/health", async (req, res) => {
   try {
     await sheetsStore.ensureSheetReady();
