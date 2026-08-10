@@ -149,13 +149,13 @@ app.get("/api/env-check", (req, res) => {
 // Le mot de passe est envoyé dans l'en-tête "x-admin-password" à chaque appel.
 // ---------------------------------------------------------------------------
 function requireAdminPassword(req, res, next) {
-  const configured = process.env.ADMIN_PASSWORD;
+  const configured = (process.env.ADMIN_PASSWORD || "").trim();
   if (!configured) {
     return res.status(500).json({
       error: "Administration désactivée : variable ADMIN_PASSWORD manquante sur le serveur.",
     });
   }
-  const provided = req.headers["x-admin-password"];
+  const provided = (req.headers["x-admin-password"] || "").trim();
   if (provided !== configured) {
     return res.status(401).json({ error: "Mot de passe incorrect." });
   }
