@@ -182,8 +182,11 @@ function parseFields(rawText) {
   let texte = "";
 
   if (lines.length > 0) {
+    // Tolère un tiret ou un espace parasite entre les groupes (l'OCR n'est
+    // jamais parfait à 100% : mieux vaut remplir les champs de façon
+    // imparfaite - modifiable en un clic - que de tout basculer en texte brut.
     const firstLineMatch = lines[0].match(
-      /^(\d{1,3})\s+([A-Z]{1,4}\s*\d{1,4}\s*[A-Z]{1,4})/i
+      /^(\d{1,3})\s+([A-Z]{1,4}[\s-]{0,3}\d{1,4}[\s-]{0,3}[A-Z]{1,4})/i
     );
 
     if (firstLineMatch) {
