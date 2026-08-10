@@ -143,6 +143,69 @@ app.get("/api/env-check", (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// ADMINISTRATION : protégée par un mot de passe (variable ADMIN_PASSWORD).
+// Permet de lister les lignes, en supprimer une, ou vider tout le fichier.
+// Le mot de passe est envoyé dans l'en-tête "x-admin-password" à chaque appel.
+// ---------------------------------------------------------------------------
+function requireAdminPassword(req, res, next) {
+  const configured = process.env.ADMIN_PASSWORD;
+  if (!configured) {
+    return res.status(500).json({
+      error: "Administration désactivée : variable ADMIN_PASSWORD manquante sur le serveur.",
+    });
+  }
+  const provided = req.headers["x-admin-password"];
+  if (provided !== configured) {
+    return res.status(401).json({ error: "Mot de passe incorrect." });
+  }
+  next();
+}
+
+app.get("/api/admin/rows", requireAdminPassword, async (req, res) => {
+  try {
+    const rows = await store.getAllRows();
+    res.json({
+      ok: true,
+      rows: rows.map((r, index) => ({
+        index,
+        numeroTranche: r[0] || "",
+        numeroIdentification: r[1] || "",
+        texte: r[2] || "",
+        dateHeure: r[3] || "",
+        photoUrl: r[4] || "",
+      })),
+    });
+  } catch (err) {
+    console.error("Erreur /api/admin/rows :", err);
+    res.status(500).json({ error: "Échec de la récupération.", detail: err.message });
+  }
+});
+
+app.delete("/api/admin/rows/:index", requireAdminPassword, async (req, res) => {
+  try {
+    const index = parseInt(req.params.index, 10);
+    if (Number.isNaN(index) || index < 0) {
+      return res.status(400).json({ error: "Index de ligne invalide." });
+    }
+    await store.deleteRow(index);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Erreur DELETE /api/admin/rows :", err);
+    res.status(500).json({ error: "Échec de la suppression.", detail: err.message });
+  }
+});
+
+app.post("/api/admin/reset", requireAdminPassword, async (req, res) => {
+  try {
+    await store.clearAllRows();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Erreur /api/admin/reset :", err);
+    res.status(500).json({ error: "Échec de la réinitialisation.", detail: err.message });
+  }
+});
+
 app.get("/api/health", async (req, res) => {
   try {
     await sheetsStore.ensureSheetReady();
