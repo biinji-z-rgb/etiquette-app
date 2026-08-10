@@ -1,64 +1,124 @@
 // services/ocr.js
 // OCR 100% gratuit avec Tesseract.js (tourne sur le serveur, aucune clé API,
-// aucun coût). La précision est ensuite sécurisée par l'étape de VALIDATION
-// manuelle côté app (l'utilisateur voit et corrige les champs avant l'enregistrement).
+// aucun coût).
+//
+// MÉTHODE "MULTI-PASSAGES" : les étiquettes existent en polarités opposées
+// (texte clair sur fond foncé pour certaines, texte foncé sur fond clair pour
+// d'autres) et avec un éclairage/reflets variables. Un seul traitement fixe
+// ne peut pas bien gérer tous les cas. On génère donc PLUSIEURS versions
+// prétraitées de la même photo, on fait lire chacune par l'OCR, et on garde
+// automatiquement le résultat dans lequel Tesseract est le plus confiant.
+// C'est plus lent (quelques secondes de plus) mais nettement plus fiable.
 
 const { createWorker } = require("tesseract.js");
 const sharp = require("sharp");
 
-/**
- * Prépare l'image pour l'OCR : agrandit si besoin, passe en niveaux de gris,
- * réduit le bruit, égalise le contraste localement (gère bien les reflets et
- * ombres sur du métal/plastique), puis renforce la netteté.
- *
- * Important : on n'utilise PLUS de seuillage noir & blanc strict (threshold).
- * Sur une étiquette avec un léger reflet ou un éclairage inégal, un seuil fixe
- * "mange" une partie des lettres d'un côté de l'image. L'égalisation adaptative
- * (CLAHE) s'ajuste localement et donne un texte bien plus lisible pour l'OCR.
- */
-async function preprocessImage(buffer) {
-  const meta = await sharp(buffer).metadata();
-  const targetWidth = 1600;
-  let pipeline = sharp(buffer);
+const TESSERACT_PARAMS = {
+  // PSM 6 = "un seul bloc de texte uniforme", adapté à une étiquette.
+  tessedit_pageseg_mode: "6",
+  // Les étiquettes sont des codes alphanumériques en MAJUSCULES : on
+  // interdit à l'OCR de proposer des minuscules ou symboles qu'il "invente"
+  // parfois (ex: "vl" au lieu de "VL", "@" parasite...).
+  tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .-/:",
+  // Désactive la correction automatique basée sur le dictionnaire français :
+  // contre-productive sur des codes/références (ex: "DEBIT" corrigé à tort
+  // vers un autre mot proche du dictionnaire).
+  load_system_dawg: "0",
+  load_freq_dawg: "0",
+};
 
+/**
+ * Génère plusieurs versions prétraitées de la photo, pensées pour couvrir
+ * les cas courants : texte foncé sur fond clair, texte clair sur fond foncé,
+ * et une version "douce" sans binarisation forcée pour les cas intermédiaires.
+ */
+async function buildVariants(buffer) {
+  const targetWidth = 2000;
+
+  // .rotate() sans argument applique automatiquement la rotation EXIF du
+  // téléphone (une photo prise "de travers" au capteur mais correcte à
+  // l'écran doit aussi l'être pour l'OCR).
+  const oriented = sharp(buffer).rotate();
+  const meta = await oriented.metadata();
+
+  let base = sharp(buffer).rotate();
   if (!meta.width || meta.width < targetWidth) {
-    pipeline = pipeline.resize({ width: targetWidth });
+    base = base.resize({ width: targetWidth });
+  } else if (meta.width > 2600) {
+    base = base.resize({ width: 2600 });
   }
 
-  return pipeline
+  // Version de base : niveaux de gris + contraste adaptatif local (CLAHE),
+  // sans binarisation forcée. Bon compromis pour la plupart des cas.
+  const soft = await base
+    .clone()
     .grayscale()
-    .median(1) // léger débruitage (grain capteur du téléphone)
-    .clahe({ width: 40, height: 40, maxSlope: 3 }) // contraste adaptatif local
+    .median(1)
+    .clahe({ width: 40, height: 40, maxSlope: 3 })
     .sharpen({ sigma: 1.2 })
     .toBuffer();
+
+  // Version binaire "normale" : texte foncé sur fond clair (étiquettes
+  // blanches/claires).
+  const binaryNormal = await sharp(soft).threshold(140).toBuffer();
+
+  // Version binaire "inversée" : texte clair sur fond foncé (étiquettes
+  // vertes/foncées).
+  const binaryInverted = await sharp(soft).threshold(140).negate().toBuffer();
+
+  return [
+    { label: "doux", buffer: soft },
+    { label: "binaire", buffer: binaryNormal },
+    { label: "binaire inversé", buffer: binaryInverted },
+  ];
 }
 
 /**
- * Lance l'OCR sur l'image (buffer) et renvoie le texte brut détecté.
+ * Fait lire une image par Tesseract et renvoie le texte + un score de
+ * confiance moyen (0-100).
+ */
+async function runOcrOnce(worker, buffer) {
+  const {
+    data: { text, confidence },
+  } = await worker.recognize(buffer);
+  return { text: (text || "").trim(), confidence: confidence || 0 };
+}
+
+/**
+ * Lance l'OCR sur l'image en testant plusieurs prétraitements, et renvoie
+ * le texte du passage le plus fiable (meilleure confiance moyenne, ou à
+ * défaut le texte le plus long en cas d'égalité).
  */
 async function recognizeText(buffer) {
-  const processed = await preprocessImage(buffer);
+  const variants = await buildVariants(buffer);
 
   const worker = await createWorker("fra");
   try {
-    await worker.setParameters({
-      // PSM 6 = "un seul bloc de texte uniforme", adapté à une étiquette.
-      tessedit_pageseg_mode: "6",
-      // Les étiquettes sont des codes alphanumériques en MAJUSCULES : on
-      // interdit à l'OCR de proposer des minuscules ou symboles qu'il
-      // "invente" parfois (ex: "vl" au lieu de "VL", "@" parasite...).
-      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .-/:",
-      // Désactive la correction automatique basée sur le dictionnaire
-      // français : très utile pour du texte normal, mais contre-productive
-      // sur des codes/références (ex: "DEBIT" corrigé à tort vers un autre
-      // mot proche du dictionnaire).
-      load_system_dawg: "0",
-      load_freq_dawg: "0",
+    await worker.setParameters(TESSERACT_PARAMS);
+
+    const results = [];
+    for (const variant of variants) {
+      try {
+        const result = await runOcrOnce(worker, variant.buffer);
+        results.push({ ...result, label: variant.label });
+      } catch (err) {
+        console.warn(`OCR échoué sur variante "${variant.label}" :`, err.message);
+      }
+    }
+
+    if (results.length === 0) return "";
+
+    results.sort((a, b) => {
+      // Priorité à la confiance moyenne de Tesseract ; en cas de quasi-égalité
+      // (moins de 5 points d'écart), on préfère le texte le plus long, qui
+      // indique souvent une lecture plus complète.
+      if (Math.abs(b.confidence - a.confidence) > 5) {
+        return b.confidence - a.confidence;
+      }
+      return b.text.length - a.text.length;
     });
-    const {
-      data: { text },
-    } = await worker.recognize(processed);
-    return text;
+
+    return results[0].text;
   } finally {
     await worker.terminate();
   }
@@ -92,20 +152,15 @@ function parseFields(rawText) {
   let texte = "";
 
   if (lines.length > 0) {
-    // Ligne 1 attendue : un chiffre, puis lettres/chiffres (ex: "2 STR 215 VL")
     const firstLineMatch = lines[0].match(
       /^(\d{1,3})\s+([A-Z]{1,4}\s*\d{1,4}\s*[A-Z]{1,4})/i
     );
 
     if (firstLineMatch) {
       numeroTranche = firstLineMatch[1].trim();
-      // normalise les espaces multiples dans l'identifiant
       numeroIdentification = firstLineMatch[2].replace(/\s+/g, " ").trim();
       texte = lines.slice(1).join(" ").trim();
     } else {
-      // Le format attendu n'a pas été reconnu : on ne devine rien pour la
-      // tranche/l'identification, tout le texte brut part dans "texte"
-      // pour que l'utilisateur puisse corriger facilement.
       texte = lines.join(" | ");
     }
   }
