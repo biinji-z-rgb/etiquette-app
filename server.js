@@ -16,7 +16,18 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(
+  express.static(path.join(__dirname, "public"), {
+    setHeaders: (res, filePath) => {
+      // Empêche les navigateurs (surtout mobiles) de garder en cache une
+      // ancienne version de l'app après un déploiement : sans ça, on peut
+      // rester bloqué sur du vieux code JS pendant longtemps sans le savoir.
+      if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-store, must-revalidate");
+      }
+    },
+  })
+);
 
 const upload = multer({
   storage: multer.memoryStorage(),
