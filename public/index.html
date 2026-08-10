@@ -158,6 +158,7 @@
     </div>
     <div class="capture-actions">
       <button class="btn-primary" id="btnCapture" disabled>📸 Prendre la photo</button>
+      <button class="btn-secondary hidden" id="btnFlash">🔦 Activer le flash</button>
       <button class="btn-ghost" id="btnUseFile">Utiliser la pellicule / une autre méthode</button>
     </div>
   </div>
@@ -212,6 +213,8 @@ const $ = (id) => document.getElementById(id);
 
 let currentPhotoBlob = null;
 let mediaStream = null;
+let flashOn = false;
+let torchCapable = false;
 
 const stepCapture = $("step-capture");
 const stepValidate = $("step-validate");
@@ -221,6 +224,7 @@ const cameraWrap = $("cameraWrap");
 const cameraEl = $("camera");
 const guideOverlay = $("guideOverlay");
 const btnCapture = $("btnCapture");
+const btnFlash = $("btnFlash");
 const btnUseFile = $("btnUseFile");
 const btnOpenCamera = $("btnOpenCamera");
 const fileInput = $("fileInput");
@@ -278,6 +282,26 @@ async function startCamera() {
     btnCapture.disabled = false;
     cameraView.classList.remove("hidden");
     captureZone.classList.add("hidden");
+
+    // Détecte si l'appareil permet de contrôler la torche depuis le navigateur.
+    // Remarque : sur iPhone (Safari), Apple bloque cette fonctionnalité pour
+    // les sites web — le bouton restera alors masqué, ce n'est pas un bug de
+    // l'app. Sur Android (Chrome), ça fonctionne dans la grande majorité des cas.
+    flashOn = false;
+    torchCapable = false;
+    const videoTrack = mediaStream.getVideoTracks()[0];
+    try {
+      const capabilities = videoTrack.getCapabilities?.();
+      if (capabilities && capabilities.torch) {
+        torchCapable = true;
+        btnFlash.classList.remove("hidden");
+        btnFlash.textContent = "🔦 Activer le flash";
+      } else {
+        btnFlash.classList.add("hidden");
+      }
+    } catch {
+      btnFlash.classList.add("hidden");
+    }
   } catch (err) {
     console.warn("Caméra live indisponible, repli sur la sélection classique :", err);
     cameraView.classList.add("hidden");
@@ -338,6 +362,19 @@ btnCapture.addEventListener("click", async () => {
   btnCapture.disabled = false;
   if (!blob) return;
   handleNewPhoto(blob);
+});
+
+btnFlash.addEventListener("click", async () => {
+  if (!torchCapable || !mediaStream) return;
+  const videoTrack = mediaStream.getVideoTracks()[0];
+  try {
+    flashOn = !flashOn;
+    await videoTrack.applyConstraints({ advanced: [{ torch: flashOn }] });
+    btnFlash.textContent = flashOn ? "🔦 Désactiver le flash" : "🔦 Activer le flash";
+  } catch (err) {
+    console.warn("Impossible de contrôler le flash :", err);
+    flashOn = false;
+  }
 });
 
 btnUseFile.addEventListener("click", () => fileInput.click());

@@ -1,49 +1,46 @@
 // services/photoStore.js
-// Stocke les photos sur Cloudinary (offre gratuite, aucune carte bancaire requise).
+// Stocke les photos sur Cloudinary via un UPLOAD NON SIGNÉ.
 //
-// Pourquoi pas Google Drive ? Un compte de service Google n'a AUCUN quota de
-// stockage personnel (0 octet) : il ne peut donc jamais déposer de fichier
-// dans Drive, même dans un dossier partagé en "Éditeur" avec lui. C'est une
-// limite de Google (voir "storageQuotaExceeded"), pas un bug de cette app.
-// Cloudinary est un hébergeur d'images gratuit qui fonctionne très bien avec
-// une simple clé API, sans ce problème.
+// Pourquoi non signé ? L'upload "signé" classique nécessite de calculer une
+// signature avec l'API Secret : la moindre variable mal copiée (espace,
+// guillemet, retour à la ligne...) donne une erreur "Invalid Signature"
+// difficile à diagnostiquer. L'upload NON SIGNÉ n'a besoin que du nom du
+// cloud + d'un "upload preset" public : plus aucun risque de ce type
+// d'erreur, et c'est tout aussi gratuit et sécurisé pour cet usage.
+//
+// Pourquoi pas Google Drive ? Voir la note dans googleStore.js /README.md :
+// un compte de service Google n'a aucun quota de stockage sur Drive.
 
-const cloudinary = require("cloudinary").v2;
+async function uploadPhoto(buffer, filename) {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const uploadPreset = process.env.CLOUDINARY_UPLOAD_PRESET;
 
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true,
-});
-
-/**
- * Upload une photo (buffer) sur Cloudinary et renvoie son URL publique.
- */
-function uploadPhoto(buffer, filename) {
-  return new Promise((resolve, reject) => {
-    if (
-      !process.env.CLOUDINARY_CLOUD_NAME ||
-      !process.env.CLOUDINARY_API_KEY ||
-      !process.env.CLOUDINARY_API_SECRET
-    ) {
-      return reject(
-        new Error(
-          "Variables CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET manquantes (voir README.md)"
-        )
-      );
-    }
-
-    const publicId = filename.replace(/\.[^/.]+$/, "");
-    const stream = cloudinary.uploader.upload_stream(
-      { folder: "etiquettes", public_id: publicId, resource_type: "image" },
-      (error, result) => {
-        if (error) return reject(error);
-        resolve(result.secure_url);
-      }
+  if (!cloudName || !uploadPreset) {
+    throw new Error(
+      "Variables CLOUDINARY_CLOUD_NAME / CLOUDINARY_UPLOAD_PRESET manquantes (voir README.md)"
     );
-    stream.end(buffer);
-  });
+  }
+
+  const form = new FormData();
+  form.append("file", new Blob([buffer], { type: "image/jpeg" }), filename);
+  form.append("upload_preset", uploadPreset);
+  form.append("folder", "etiquettes");
+
+  const res = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+    { method: "POST", body: form }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(
+      "Échec de l'upload Cloudinary : " +
+        (data.error?.message || res.statusText)
+    );
+  }
+
+  return data.secure_url;
 }
 
 module.exports = { uploadPhoto };

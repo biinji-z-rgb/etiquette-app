@@ -64,10 +64,16 @@ Sans cette étape, le serveur n'aura pas le droit d'écrire dedans.
 
 ### d) Crée un compte Cloudinary gratuit (pour les photos)
 1. Va sur https://cloudinary.com/users/register/free et crée un compte (gratuit, aucune carte bancaire requise).
-2. Une fois connecté, va sur ton **Dashboard** — tu y trouveras directement :
-   - **Cloud name**
-   - **API Key**
-   - **API Secret** (clique sur l'œil 👁 pour l'afficher)
+2. Une fois connecté, sur ton **Dashboard**, note ton **Cloud name** (affiché en haut).
+3. Va dans **Settings** (icône ⚙️ en haut à droite) → onglet **Upload**.
+4. Descends jusqu'à **Upload presets** → clique **Add upload preset**.
+5. Règle **Signing Mode** sur **Unsigned** (non signé).
+6. Donne-lui un nom simple, ex. `etiquette-app` (ou laisse le nom généré) → **Save**.
+7. Note bien le nom exact de ce preset, c'est lui qu'il faudra utiliser.
+
+> Pourquoi "non signé" ? Ça évite complètement les erreurs de signature liées
+> à une clé secrète mal copiée (espace, guillemet...) — plus robuste pour ce
+> projet, sans rien perdre en fiabilité.
 
 ---
 
@@ -84,8 +90,7 @@ cp .env.example .env
   l'étape 1b, sur une seule ligne (tu peux utiliser un outil en ligne "JSON to single line"
   ou simplement supprimer les retours à la ligne).
 - `GOOGLE_SHEET_ID` : l'ID récupéré à l'étape 1a.
-- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` : récupérés sur
-  ton Dashboard Cloudinary (étape 1d).
+- `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_UPLOAD_PRESET` : récupérés à l'étape 1d ci-dessus.
 
 Puis :
 ```bash
@@ -109,8 +114,7 @@ Ouvre `http://localhost:3000` sur ton téléphone (même réseau Wi-Fi que ton P
    - `GOOGLE_SERVICE_ACCOUNT_KEY` (le JSON sur une ligne)
    - `GOOGLE_SHEET_ID`
    - `CLOUDINARY_CLOUD_NAME`
-   - `CLOUDINARY_API_KEY`
-   - `CLOUDINARY_API_SECRET`
+   - `CLOUDINARY_UPLOAD_PRESET`
    - `TZ` = `Europe/Paris`
 5. Clique **Create Web Service**. Render te donne une URL du type
    `https://etiquette-scanner.onrender.com`.
