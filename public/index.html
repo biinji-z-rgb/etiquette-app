@@ -251,7 +251,7 @@
     <div id="adminLoginView">
       <div class="field">
         <label for="adminPasswordInput">Mot de passe</label>
-        <input type="password" id="adminPasswordInput" placeholder="" />
+        <input type="password" id="adminPasswordInput" placeholder="" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
       </div>
       <button class="btn-primary" id="btnAdminLogin">Se connecter</button>
       <div id="adminLoginError" class="status err hidden"></div>
@@ -625,7 +625,7 @@ $("btnAdminClose").addEventListener("click", () => {
 });
 
 $("btnAdminLogin").addEventListener("click", async () => {
-  adminPassword = $("adminPasswordInput").value;
+  adminPassword = $("adminPasswordInput").value.trim();
   adminLoginError.classList.add("hidden");
   try {
     await adminFetch("/api/admin/rows");
