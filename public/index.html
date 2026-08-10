@@ -134,6 +134,36 @@
 
   footer{ text-align:center; }
   .hidden{ display:none !important; }
+
+  /* --- Panneau Administration --- */
+  #adminOverlay{
+    position:fixed; inset:0; z-index:50;
+    background:rgba(0,0,0,0.6);
+    display:flex; align-items:flex-end;
+  }
+  #adminPanel{
+    width:100%; max-height:85vh; overflow-y:auto;
+    background:var(--panel);
+    border-top-left-radius:18px; border-top-right-radius:18px;
+    padding:18px 16px calc(20px + env(safe-area-inset-bottom));
+    border:1px solid #2a332c;
+  }
+  #adminHeader{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  #adminHeader h2{ font-size:16px; margin:0; }
+  #adminHeader .btn-ghost{ width:auto; padding:8px 10px; }
+
+  .admin-row{
+    display:flex; align-items:center; gap:10px;
+    padding:10px; border:1px solid #2a332c; border-radius:9px; margin-bottom:8px;
+    background:#0f140f;
+  }
+  .admin-row-info{ flex:1; min-width:0; }
+  .admin-row-title{ font-family:var(--mono); font-size:13.5px; }
+  .admin-row-sub{ font-size:11.5px; color:var(--text-dim); margin-top:2px; }
+  .admin-row button{
+    width:auto; padding:8px 10px; font-size:13px;
+    background:#4a2320; color:#f1efe6;
+  }
 </style>
 </head>
 <body>
@@ -204,9 +234,38 @@
 
 <footer>
   <button class="btn-ghost" id="btnExport">⬇ Télécharger le fichier Excel complet</button>
+  <div style="height:6px"></div>
+  <button class="btn-ghost" id="btnAdmin">🔒 Administration</button>
 </footer>
 
 <canvas id="captureCanvas" class="hidden"></canvas>
+
+<!-- Panneau Administration (accès par mot de passe) -->
+<div id="adminOverlay" class="hidden">
+  <div id="adminPanel">
+    <div id="adminHeader">
+      <h2>🔒 Administration</h2>
+      <button class="btn-ghost" id="btnAdminClose">✕ Fermer</button>
+    </div>
+
+    <div id="adminLoginView">
+      <div class="field">
+        <label for="adminPasswordInput">Mot de passe</label>
+        <input type="password" id="adminPasswordInput" placeholder="" />
+      </div>
+      <button class="btn-primary" id="btnAdminLogin">Se connecter</button>
+      <div id="adminLoginError" class="status err hidden"></div>
+    </div>
+
+    <div id="adminRowsView" class="hidden">
+      <button class="btn-secondary" id="btnAdminRefresh">↻ Actualiser la liste</button>
+      <div id="adminRowsList"></div>
+      <div style="height:10px"></div>
+      <button class="btn-secondary" id="btnAdminReset" style="background:#4a2320; color:#f1efe6;">🗑 Réinitialiser tout le fichier</button>
+      <div id="adminActionStatus" class="status hidden"></div>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -482,6 +541,119 @@ $("btnValidate").addEventListener("click", async () => {
 
 $("btnExport").addEventListener("click", () => {
   window.location.href = "/api/export-excel";
+});
+
+// --- Panneau Administration ---
+const adminOverlay = $("adminOverlay");
+const adminLoginView = $("adminLoginView");
+const adminRowsView = $("adminRowsView");
+const adminRowsList = $("adminRowsList");
+const adminActionStatus = $("adminActionStatus");
+const adminLoginError = $("adminLoginError");
+let adminPassword = "";
+
+async function adminFetch(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...(options.headers || {}), "x-admin-password": adminPassword },
+  });
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("[HTTP " + res.status + "] Réponse non-JSON : " + text.slice(0, 200));
+  }
+  if (!res.ok) throw new Error(data.error || "Erreur");
+  return data;
+}
+
+async function adminLoadRows() {
+  adminRowsList.innerHTML = "<p style='color:var(--text-dim);font-size:13px;'>Chargement…</p>";
+  try {
+    const data = await adminFetch("/api/admin/rows");
+    if (data.rows.length === 0) {
+      adminRowsList.innerHTML = "<p style='color:var(--text-dim);font-size:13px;'>Aucune ligne enregistrée.</p>";
+      return;
+    }
+    adminRowsList.innerHTML = "";
+    // On affiche du plus récent au plus ancien, mais on garde l'index réel
+    // (nécessaire pour la suppression) attaché à chaque ligne.
+    [...data.rows].reverse().forEach((row) => {
+      const div = document.createElement("div");
+      div.className = "admin-row";
+      div.innerHTML = `
+        <div class="admin-row-info">
+          <div class="admin-row-title">${row.numeroTranche || "—"} / ${row.numeroIdentification || "—"}</div>
+          <div class="admin-row-sub">${row.dateHeure || ""}${row.texte ? " · " + row.texte : ""}</div>
+        </div>
+        <button data-index="${row.index}">🗑</button>
+      `;
+      div.querySelector("button").addEventListener("click", () => adminDeleteRow(row.index));
+      adminRowsList.appendChild(div);
+    });
+  } catch (err) {
+    adminRowsList.innerHTML = "";
+    adminActionStatus.classList.remove("hidden");
+    adminActionStatus.className = "status err";
+    adminActionStatus.textContent = "Erreur : " + err.message;
+  }
+}
+
+async function adminDeleteRow(index) {
+  if (!confirm("Supprimer définitivement cette ligne ?")) return;
+  try {
+    await adminFetch("/api/admin/rows/" + index, { method: "DELETE" });
+    await adminLoadRows();
+  } catch (err) {
+    adminActionStatus.classList.remove("hidden");
+    adminActionStatus.className = "status err";
+    adminActionStatus.textContent = "Erreur : " + err.message;
+  }
+}
+
+$("btnAdmin").addEventListener("click", () => {
+  adminOverlay.classList.remove("hidden");
+  adminLoginView.classList.remove("hidden");
+  adminRowsView.classList.add("hidden");
+  adminLoginError.classList.add("hidden");
+  $("adminPasswordInput").value = "";
+});
+
+$("btnAdminClose").addEventListener("click", () => {
+  adminOverlay.classList.add("hidden");
+});
+
+$("btnAdminLogin").addEventListener("click", async () => {
+  adminPassword = $("adminPasswordInput").value;
+  adminLoginError.classList.add("hidden");
+  try {
+    await adminFetch("/api/admin/rows");
+    adminLoginView.classList.add("hidden");
+    adminRowsView.classList.remove("hidden");
+    adminLoadRows();
+  } catch (err) {
+    adminLoginError.classList.remove("hidden");
+    adminLoginError.textContent = "Erreur : " + err.message;
+  }
+});
+
+$("btnAdminRefresh").addEventListener("click", adminLoadRows);
+
+$("btnAdminReset").addEventListener("click", async () => {
+  if (!confirm("⚠️ Ceci va supprimer TOUTES les lignes du fichier, pour tout le monde. Continuer ?")) return;
+  if (!confirm("Dernière confirmation : cette action est irréversible. Vraiment tout réinitialiser ?")) return;
+  try {
+    await adminFetch("/api/admin/reset", { method: "POST" });
+    await adminLoadRows();
+    adminActionStatus.classList.remove("hidden");
+    adminActionStatus.className = "status ok";
+    adminActionStatus.textContent = "✓ Fichier réinitialisé.";
+  } catch (err) {
+    adminActionStatus.classList.remove("hidden");
+    adminActionStatus.className = "status err";
+    adminActionStatus.textContent = "Erreur : " + err.message;
+  }
 });
 
 // Démarre la caméra dès l'ouverture de la page
