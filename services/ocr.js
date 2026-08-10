@@ -28,16 +28,41 @@ const TESSERACT_PARAMS = {
 };
 
 /**
+ * Calcule une image en niveaux de gris à partir du MINIMUM des 3 canaux
+ * (R, G, B) de chaque pixel, plutôt que la formule de luminance standard.
+ *
+ * Pourquoi : la luminance classique donne un poids très fort au vert. Un
+ * fond vert saturé peut alors ressortir presque aussi clair qu'un texte
+ * blanc, ce qui détruit le contraste. Le "canal minimum" résout ça : du
+ * blanc pur garde une valeur haute (R, G et B sont tous élevés), alors
+ * qu'une couleur saturée (peu importe laquelle) a toujours au moins un
+ * canal bas — donc un minimum bas. Résultat : le texte blanc reste clair,
+ * et N'IMPORTE QUEL fond coloré ressort sombre, quelle que soit sa teinte.
+ */
+async function minChannelGrayscale(sharpInstance) {
+  const redBuf = await sharpInstance.clone().extractChannel("red").toBuffer();
+  const greenBuf = await sharpInstance.clone().extractChannel("green").toBuffer();
+  const blueBuf = await sharpInstance.clone().extractChannel("blue").toBuffer();
+
+  return sharp(redBuf)
+    .composite([
+      { input: greenBuf, blend: "darken" },
+      { input: blueBuf, blend: "darken" },
+    ])
+    .removeAlpha()
+    .toColorspace("b-w")
+    .toBuffer();
+}
+
+/**
  * Génère plusieurs versions prétraitées de la photo, pensées pour couvrir
  * les cas courants : texte foncé sur fond clair, texte clair sur fond foncé,
- * et une version "douce" sans binarisation forcée pour les cas intermédiaires.
+ * texte clair sur fond COLORÉ (vert, bleu...), et une version "douce" sans
+ * binarisation forcée pour les cas intermédiaires.
  */
 async function buildVariants(buffer) {
   const targetWidth = 2000;
 
-  // .rotate() sans argument applique automatiquement la rotation EXIF du
-  // téléphone (une photo prise "de travers" au capteur mais correcte à
-  // l'écran doit aussi l'être pour l'OCR).
   const oriented = sharp(buffer).rotate();
   const meta = await oriented.metadata();
 
@@ -47,29 +72,34 @@ async function buildVariants(buffer) {
   } else if (meta.width > 2600) {
     base = base.resize({ width: 2600 });
   }
+  const baseBuffer = await base.toBuffer();
 
-  // Version de base : niveaux de gris + contraste adaptatif local (CLAHE),
-  // sans binarisation forcée. Bon compromis pour la plupart des cas.
-  const soft = await base
-    .clone()
+  // Version de base : niveaux de gris classiques + contraste adaptatif local.
+  const soft = await sharp(baseBuffer)
     .grayscale()
     .median(1)
     .clahe({ width: 40, height: 40, maxSlope: 3 })
     .sharpen({ sigma: 1.2 })
     .toBuffer();
 
-  // Version binaire "normale" : texte foncé sur fond clair (étiquettes
-  // blanches/claires).
   const binaryNormal = await sharp(soft).threshold(140).toBuffer();
-
-  // Version binaire "inversée" : texte clair sur fond foncé (étiquettes
-  // vertes/foncées).
   const binaryInverted = await sharp(soft).threshold(140).negate().toBuffer();
+
+  // Version "canal minimum" : spécifiquement pour texte clair sur fond
+  // coloré (vert, bleu, rouge...), voir minChannelGrayscale() ci-dessus.
+  const minChannel = await minChannelGrayscale(sharp(baseBuffer));
+  const minChannelEnhanced = await sharp(minChannel)
+    .median(1)
+    .clahe({ width: 40, height: 40, maxSlope: 3 })
+    .sharpen({ sigma: 1.2 })
+    .toBuffer();
+  const minChannelBinary = await sharp(minChannelEnhanced).threshold(120).toBuffer();
 
   return [
     { label: "doux", buffer: soft },
     { label: "binaire", buffer: binaryNormal },
     { label: "binaire inversé", buffer: binaryInverted },
+    { label: "fond coloré", buffer: minChannelBinary },
   ];
 }
 
