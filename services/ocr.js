@@ -8,39 +8,53 @@ const sharp = require("sharp");
 
 /**
  * Prépare l'image pour l'OCR : agrandit si besoin, passe en niveaux de gris,
- * renforce le contraste et la netteté. Ça améliore nettement la lecture de
- * texte gravé/imprimé sur des étiquettes métalliques ou plastiques.
+ * réduit le bruit, égalise le contraste localement (gère bien les reflets et
+ * ombres sur du métal/plastique), puis renforce la netteté.
+ *
+ * Important : on n'utilise PLUS de seuillage noir & blanc strict (threshold).
+ * Sur une étiquette avec un léger reflet ou un éclairage inégal, un seuil fixe
+ * "mange" une partie des lettres d'un côté de l'image. L'égalisation adaptative
+ * (CLAHE) s'ajuste localement et donne un texte bien plus lisible pour l'OCR.
  */
 async function preprocessImage(buffer) {
   const meta = await sharp(buffer).metadata();
+  const targetWidth = 1600;
   let pipeline = sharp(buffer);
 
-  // Agrandit les petites photos pour donner plus de détail à l'OCR
-  if (meta.width && meta.width < 1200) {
-    pipeline = pipeline.resize({ width: 1200 });
+  if (!meta.width || meta.width < targetWidth) {
+    pipeline = pipeline.resize({ width: targetWidth });
   }
 
   return pipeline
     .grayscale()
-    .normalize() // étire le contraste sur toute la plage disponible
-    .sharpen()
-    .threshold(150) // noir & blanc franc : aide beaucoup sur du texte gravé
+    .median(1) // léger débruitage (grain capteur du téléphone)
+    .clahe({ width: 40, height: 40, maxSlope: 3 }) // contraste adaptatif local
+    .sharpen({ sigma: 1.2 })
     .toBuffer();
 }
 
 /**
  * Lance l'OCR sur l'image (buffer) et renvoie le texte brut détecté.
- * lang "fra" = français. On peut mettre "fra+eng" si les étiquettes
- * mélangent des mots anglais/techniques.
  */
 async function recognizeText(buffer) {
   const processed = await preprocessImage(buffer);
 
   const worker = await createWorker("fra");
   try {
-    // PSM 6 = "un seul bloc de texte uniforme", plus adapté à une étiquette
-    // qu'à une page complète.
-    await worker.setParameters({ tessedit_pageseg_mode: "6" });
+    await worker.setParameters({
+      // PSM 6 = "un seul bloc de texte uniforme", adapté à une étiquette.
+      tessedit_pageseg_mode: "6",
+      // Les étiquettes sont des codes alphanumériques en MAJUSCULES : on
+      // interdit à l'OCR de proposer des minuscules ou symboles qu'il
+      // "invente" parfois (ex: "vl" au lieu de "VL", "@" parasite...).
+      tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .-/:",
+      // Désactive la correction automatique basée sur le dictionnaire
+      // français : très utile pour du texte normal, mais contre-productive
+      // sur des codes/références (ex: "DEBIT" corrigé à tort vers un autre
+      // mot proche du dictionnaire).
+      load_system_dawg: "0",
+      load_freq_dawg: "0",
+    });
     const {
       data: { text },
     } = await worker.recognize(processed);
