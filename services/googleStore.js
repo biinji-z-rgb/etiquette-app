@@ -105,9 +105,64 @@ async function getAllRows() {
   return res.data.values || [];
 }
 
+let cachedNumericSheetId = null;
+
+/** Récupère l'ID numérique interne de l'onglet (nécessaire pour supprimer des lignes). */
+async function getNumericSheetId() {
+  if (cachedNumericSheetId !== null) return cachedNumericSheetId;
+  const sheets = await getSheetsClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID() });
+  const tab = meta.data.sheets.find((s) => s.properties.title === SHEET_TAB_NAME);
+  if (!tab) throw new Error(`Onglet "${SHEET_TAB_NAME}" introuvable.`);
+  cachedNumericSheetId = tab.properties.sheetId;
+  return cachedNumericSheetId;
+}
+
+/** Vide toutes les lignes de données (garde l'entête). */
+async function clearAllRows() {
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID(),
+    range: `${SHEET_TAB_NAME}!A2:E`,
+  });
+}
+
+/**
+ * Supprime une ligne précise (index 0 = première ligne de données, sous
+ * l'entête). Correspond à l'index renvoyé par getAllRows().
+ */
+async function deleteRow(dataRowIndex) {
+  const sheets = await getSheetsClient();
+  const sheetId = await getNumericSheetId();
+  // +1 car la ligne 0 de la grille est l'entête ; la donnée d'index 0 est
+  // donc la ligne 1 de la grille (0-based), soit la ligne 2 affichée dans Sheets.
+  const startIndex = dataRowIndex + 1;
+  const endIndex = startIndex + 1;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID(),
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: "ROWS",
+              startIndex,
+              endIndex,
+            },
+          },
+        },
+      ],
+    },
+  });
+}
+
 module.exports = {
   ensureSheetReady,
   appendRow,
   getAllRows,
+  clearAllRows,
+  deleteRow,
   HEADERS,
 };
