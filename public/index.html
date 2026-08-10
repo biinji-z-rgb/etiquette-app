@@ -564,7 +564,11 @@ async function adminFetch(url, options = {}) {
   } catch {
     throw new Error("[HTTP " + res.status + "] Réponse non-JSON : " + text.slice(0, 200));
   }
-  if (!res.ok) throw new Error(data.error || "Erreur");
+  if (!res.ok) {
+    throw new Error(
+      (data.error || "Erreur") + (data.detail ? " — DÉTAIL : " + data.detail : "")
+    );
+  }
   return data;
 }
 
