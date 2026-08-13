@@ -74,8 +74,19 @@ async function buildVariants(buffer) {
   }
   const baseBuffer = await base.toBuffer();
 
+  // Rognage automatique : élimine les bords uniformes (table, fond, cadre en
+  // trop) qui n'auraient pas été parfaitement exclus par le cadrage manuel.
+  // Resserre l'image sur l'étiquette elle-même avant analyse.
+  let croppedBuffer = baseBuffer;
+  try {
+    croppedBuffer = await sharp(baseBuffer).trim({ threshold: 15 }).toBuffer();
+  } catch {
+    // Si le rognage échoue (image trop uniforme, etc.), on garde l'originale.
+    croppedBuffer = baseBuffer;
+  }
+
   // Version de base : niveaux de gris classiques + contraste adaptatif local.
-  const soft = await sharp(baseBuffer)
+  const soft = await sharp(croppedBuffer)
     .grayscale()
     .median(1)
     .clahe({ width: 40, height: 40, maxSlope: 3 })
@@ -87,7 +98,7 @@ async function buildVariants(buffer) {
 
   // Version "canal minimum" : spécifiquement pour texte clair sur fond
   // coloré (vert, bleu, rouge...), voir minChannelGrayscale() ci-dessus.
-  const minChannel = await minChannelGrayscale(sharp(baseBuffer));
+  const minChannel = await minChannelGrayscale(sharp(croppedBuffer));
   const minChannelEnhanced = await sharp(minChannel)
     .median(1)
     .clahe({ width: 40, height: 40, maxSlope: 3 })
