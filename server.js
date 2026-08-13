@@ -164,7 +164,7 @@ function requireAdminPassword(req, res, next) {
 
 app.get("/api/admin/rows", requireAdminPassword, async (req, res) => {
   try {
-    const rows = await store.getAllRows();
+    const rows = await sheetsStore.getAllRows();
     res.json({
       ok: true,
       rows: rows.map((r, index) => ({
@@ -188,7 +188,7 @@ app.delete("/api/admin/rows/:index", requireAdminPassword, async (req, res) => {
     if (Number.isNaN(index) || index < 0) {
       return res.status(400).json({ error: "Index de ligne invalide." });
     }
-    await store.deleteRow(index);
+    await sheetsStore.deleteRow(index);
     res.json({ ok: true });
   } catch (err) {
     console.error("Erreur DELETE /api/admin/rows :", err);
@@ -198,7 +198,7 @@ app.delete("/api/admin/rows/:index", requireAdminPassword, async (req, res) => {
 
 app.post("/api/admin/reset", requireAdminPassword, async (req, res) => {
   try {
-    await store.clearAllRows();
+    await sheetsStore.clearAllRows();
     res.json({ ok: true });
   } catch (err) {
     console.error("Erreur /api/admin/reset :", err);
