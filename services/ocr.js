@@ -2,13 +2,26 @@
 // OCR 100% gratuit avec Tesseract.js (tourne sur le serveur, aucune clé API,
 // aucun coût).
 //
-// MÉTHODE "MULTI-PASSAGES" : les étiquettes existent en polarités opposées
-// (texte clair sur fond foncé pour certaines, texte foncé sur fond clair pour
-// d'autres) et avec un éclairage/reflets variables. Un seul traitement fixe
-// ne peut pas bien gérer tous les cas. On génère donc PLUSIEURS versions
-// prétraitées de la même photo, on fait lire chacune par l'OCR, et on garde
-// automatiquement le résultat dans lequel Tesseract est le plus confiant.
-// C'est plus lent (quelques secondes de plus) mais nettement plus fiable.
+// MÉTHODE "MULTI-PASSAGES INTELLIGENTS" : les étiquettes existent en polarités
+// opposées (texte clair sur fond foncé pour certaines, texte foncé sur fond
+// clair pour d'autres) et avec un éclairage/reflets variables. Un seul
+// traitement fixe ne peut pas bien gérer tous les cas.
+//
+// Plutôt que de tester bêtement 4 versions prétraitées en série à chaque
+// scan (lent), on :
+//   1. Garde 2 workers Tesseract PERSISTANTS, créés une seule fois (au
+//      premier scan suivant un déploiement/redémarrage), puis réutilisés
+//      pour tous les scans suivants — évite de recharger le modèle de
+//      langue à chaque photo (gros gain de temps à partir du 2e scan).
+//   2. Analyse rapidement les couleurs moyennes de la photo pour deviner
+//      quel(s) prétraitement(s) a/ont le plus de chances de fonctionner
+//      (fond coloré ? fond clair ? fond sombre ?), et ne lance QUE ceux-là,
+//      en parallèle sur les 2 workers.
+//   3. Si le résultat n'est pas assez fiable (faible confiance), lance
+//      automatiquement les variantes restantes en renfort. La fiabilité
+//      finale est donc identique au système précédent (rien n'est
+//      sacrifié) — seul le cas "facile" (la majorité des scans) devient
+//      nettement plus rapide.
 
 const { createWorker } = require("tesseract.js");
 const sharp = require("sharp");
@@ -26,6 +39,37 @@ const TESSERACT_PARAMS = {
   load_system_dawg: "0",
   load_freq_dawg: "0",
 };
+
+// En dessous de ce score de confiance moyenne (0-100), on ne fait pas
+// confiance au résultat obtenu avec les variantes "rapides" choisies par
+// l'heuristique, et on relance les variantes restantes en renfort.
+const CONFIDENCE_FALLBACK_THRESHOLD = 45;
+
+// ---------------------------------------------------------------------------
+// POOL DE WORKERS TESSERACT PERSISTANTS
+// ---------------------------------------------------------------------------
+// Créés une seule fois (au premier scan après le démarrage/redéploiement du
+// serveur), puis réutilisés indéfiniment pour tous les scans suivants. Deux
+// workers permettent de traiter deux variantes en parallèle sans dépasser
+// la mémoire disponible sur un plan gratuit.
+const WORKER_POOL_SIZE = 2;
+let workerPoolPromise = null;
+
+async function getWorkerPool() {
+  if (!workerPoolPromise) {
+    workerPoolPromise = (async () => {
+      const workers = [];
+      for (let i = 0; i < WORKER_POOL_SIZE; i++) {
+        const worker = await createWorker("fra");
+        await worker.setParameters(TESSERACT_PARAMS);
+        workers.push(worker);
+      }
+      console.log(`OCR : pool de ${WORKER_POOL_SIZE} workers Tesseract prêt.`);
+      return workers;
+    })();
+  }
+  return workerPoolPromise;
+}
 
 /**
  * Calcule une image en niveaux de gris à partir du MINIMUM des 3 canaux
@@ -55,12 +99,10 @@ async function minChannelGrayscale(sharpInstance) {
 }
 
 /**
- * Génère plusieurs versions prétraitées de la photo, pensées pour couvrir
- * les cas courants : texte foncé sur fond clair, texte clair sur fond foncé,
- * texte clair sur fond COLORÉ (vert, bleu...), et une version "douce" sans
- * binarisation forcée pour les cas intermédiaires.
+ * Prépare l'image de base (rotation EXIF, redimensionnement, rognage auto
+ * des bords uniformes). Retourne le buffer prêt à être décliné en variantes.
  */
-async function buildVariants(buffer) {
+async function prepareBaseImage(buffer) {
   const targetWidth = 2000;
 
   const oriented = sharp(buffer).rotate();
@@ -76,93 +118,157 @@ async function buildVariants(buffer) {
 
   // Rognage automatique : élimine les bords uniformes (table, fond, cadre en
   // trop) qui n'auraient pas été parfaitement exclus par le cadrage manuel.
-  // Resserre l'image sur l'étiquette elle-même avant analyse.
-  let croppedBuffer = baseBuffer;
   try {
-    croppedBuffer = await sharp(baseBuffer).trim({ threshold: 15 }).toBuffer();
+    return await sharp(baseBuffer).trim({ threshold: 15 }).toBuffer();
   } catch {
     // Si le rognage échoue (image trop uniforme, etc.), on garde l'originale.
-    croppedBuffer = baseBuffer;
+    return baseBuffer;
+  }
+}
+
+/**
+ * Analyse rapide (quelques millisecondes, pas d'OCR) des couleurs moyennes
+ * de l'image pour deviner quelles variantes de prétraitement ont le plus
+ * de chances de bien fonctionner, et dans quel ordre les essayer.
+ *
+ * Renvoie un tableau de labels ordonnés par priorité, ex:
+ *   ["fond coloré", "binaire inversé", "doux", "binaire"]
+ */
+async function rankVariantsByHeuristic(croppedBuffer) {
+  const stats = await sharp(croppedBuffer).stats();
+  const [r, g, b] = stats.channels;
+  const means = [r.mean, g.mean, b.mean];
+  const maxMean = Math.max(...means);
+  const minMean = Math.min(...means);
+  const colorfulness = maxMean - minMean; // écart entre canaux = "à quel point c'est coloré"
+  const brightness = means.reduce((a, c) => a + c, 0) / means.length;
+
+  if (colorfulness > 20) {
+    // Fond nettement coloré (vert, bleu, rouge...) : le canal minimum est
+    // fait exactement pour ça.
+    return ["fond coloré", "binaire inversé", "doux", "binaire"];
+  }
+  if (brightness < 110) {
+    // Fond globalement sombre / neutre (noir, gris foncé...) : texte
+    // probablement clair dessus.
+    return ["binaire inversé", "doux", "fond coloré", "binaire"];
+  }
+  // Cas le plus courant : fond clair/blanc/gris, texte foncé.
+  return ["binaire", "doux", "binaire inversé", "fond coloré"];
+}
+
+/**
+ * Construit le buffer prétraité correspondant à UN SEUL label de variante,
+ * à la demande (pas de travail inutile sur les variantes non retenues).
+ * Met en cache les étapes intermédiaires partagées ("doux" et "canal
+ * minimum") au sein d'un même appel via le paramètre `cache`.
+ */
+async function buildVariantBuffer(label, croppedBuffer, cache) {
+  if (!cache.soft) {
+    cache.soft = sharp(croppedBuffer)
+      .grayscale()
+      .median(1)
+      .clahe({ width: 40, height: 40, maxSlope: 3 })
+      .sharpen({ sigma: 1.2 })
+      .toBuffer();
+  }
+  if (!cache.minChannelBinary) {
+    cache.minChannelBinary = (async () => {
+      const minChannel = await minChannelGrayscale(sharp(croppedBuffer));
+      const enhanced = await sharp(minChannel)
+        .median(1)
+        .clahe({ width: 40, height: 40, maxSlope: 3 })
+        .sharpen({ sigma: 1.2 })
+        .toBuffer();
+      return sharp(enhanced).threshold(120).toBuffer();
+    })();
   }
 
-  // Version de base : niveaux de gris classiques + contraste adaptatif local.
-  const soft = await sharp(croppedBuffer)
-    .grayscale()
-    .median(1)
-    .clahe({ width: 40, height: 40, maxSlope: 3 })
-    .sharpen({ sigma: 1.2 })
-    .toBuffer();
-
-  const binaryNormal = await sharp(soft).threshold(140).toBuffer();
-  const binaryInverted = await sharp(soft).threshold(140).negate().toBuffer();
-
-  // Version "canal minimum" : spécifiquement pour texte clair sur fond
-  // coloré (vert, bleu, rouge...), voir minChannelGrayscale() ci-dessus.
-  const minChannel = await minChannelGrayscale(sharp(croppedBuffer));
-  const minChannelEnhanced = await sharp(minChannel)
-    .median(1)
-    .clahe({ width: 40, height: 40, maxSlope: 3 })
-    .sharpen({ sigma: 1.2 })
-    .toBuffer();
-  const minChannelBinary = await sharp(minChannelEnhanced).threshold(120).toBuffer();
-
-  return [
-    { label: "doux", buffer: soft },
-    { label: "binaire", buffer: binaryNormal },
-    { label: "binaire inversé", buffer: binaryInverted },
-    { label: "fond coloré", buffer: minChannelBinary },
-  ];
+  switch (label) {
+    case "doux":
+      return cache.soft;
+    case "binaire":
+      return sharp(await cache.soft).threshold(140).toBuffer();
+    case "binaire inversé":
+      return sharp(await cache.soft).threshold(140).negate().toBuffer();
+    case "fond coloré":
+      return cache.minChannelBinary;
+    default:
+      throw new Error(`Variante OCR inconnue : ${label}`);
+  }
 }
 
 /**
  * Fait lire une image par Tesseract et renvoie le texte + un score de
  * confiance moyen (0-100).
  */
-async function runOcrOnce(worker, buffer) {
+async function runOcrOnce(worker, buffer, label) {
   const {
     data: { text, confidence },
   } = await worker.recognize(buffer);
-  return { text: (text || "").trim(), confidence: confidence || 0 };
+  return { text: (text || "").trim(), confidence: confidence || 0, label };
 }
 
 /**
- * Lance l'OCR sur l'image en testant plusieurs prétraitements, et renvoie
- * le texte du passage le plus fiable (meilleure confiance moyenne, ou à
- * défaut le texte le plus long en cas d'égalité).
+ * Lance l'OCR sur les labels demandés, en parallèle sur le pool de workers.
+ */
+async function runLabelsInParallel(labels, croppedBuffer, cache) {
+  const pool = await getWorkerPool();
+  const results = await Promise.all(
+    labels.map(async (label, i) => {
+      try {
+        const buffer = await buildVariantBuffer(label, croppedBuffer, cache);
+        const worker = pool[i % pool.length];
+        return await runOcrOnce(worker, buffer, label);
+      } catch (err) {
+        console.warn(`OCR échoué sur variante "${label}" :`, err.message);
+        return null;
+      }
+    })
+  );
+  return results.filter(Boolean);
+}
+
+/**
+ * Lance l'OCR sur l'image en testant intelligemment les prétraitements les
+ * plus prometteurs en premier (en parallèle), et complète avec les autres
+ * seulement si nécessaire. Renvoie le texte du passage le plus fiable.
  */
 async function recognizeText(buffer) {
-  const variants = await buildVariants(buffer);
+  const croppedBuffer = await prepareBaseImage(buffer);
+  const rankedLabels = await rankVariantsByHeuristic(croppedBuffer);
+  const cache = {};
 
-  const worker = await createWorker("fra");
-  try {
-    await worker.setParameters(TESSERACT_PARAMS);
+  // Étape 1 : les 2 variantes jugées les plus prometteuses, en parallèle.
+  const fastLabels = rankedLabels.slice(0, 2);
+  let results = await runLabelsInParallel(fastLabels, croppedBuffer, cache);
 
-    const results = [];
-    for (const variant of variants) {
-      try {
-        const result = await runOcrOnce(worker, variant.buffer);
-        results.push({ ...result, label: variant.label });
-      } catch (err) {
-        console.warn(`OCR échoué sur variante "${variant.label}" :`, err.message);
-      }
-    }
+  const bestSoFar = results.length
+    ? Math.max(...results.map((r) => r.confidence))
+    : 0;
 
-    if (results.length === 0) return "";
-
-    results.sort((a, b) => {
-      // Priorité à la confiance moyenne de Tesseract ; en cas de quasi-égalité
-      // (moins de 5 points d'écart), on préfère le texte le plus long, qui
-      // indique souvent une lecture plus complète.
-      if (Math.abs(b.confidence - a.confidence) > 5) {
-        return b.confidence - a.confidence;
-      }
-      return b.text.length - a.text.length;
-    });
-
-    return results[0].text;
-  } finally {
-    await worker.terminate();
+  // Étape 2 (renfort, seulement si besoin) : si aucun résultat n'est assez
+  // fiable, on teste aussi les variantes restantes. Garantit qu'on ne perd
+  // jamais en fiabilité par rapport à l'ancien système "tout tester".
+  if (bestSoFar < CONFIDENCE_FALLBACK_THRESHOLD) {
+    const remainingLabels = rankedLabels.slice(2);
+    const extraResults = await runLabelsInParallel(remainingLabels, croppedBuffer, cache);
+    results = results.concat(extraResults);
   }
+
+  if (results.length === 0) return "";
+
+  results.sort((a, b) => {
+    // Priorité à la confiance moyenne de Tesseract ; en cas de quasi-égalité
+    // (moins de 5 points d'écart), on préfère le texte le plus long, qui
+    // indique souvent une lecture plus complète.
+    if (Math.abs(b.confidence - a.confidence) > 5) {
+      return b.confidence - a.confidence;
+    }
+    return b.text.length - a.text.length;
+  });
+
+  return results[0].text;
 }
 
 /**
